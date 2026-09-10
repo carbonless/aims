@@ -1,0 +1,10 @@
+node_modules/
+dist/
+web/dist/
+web/node_modules/
+infra/cdk/node_modules/
+infra/cdk/cdk.out/
+*.log
+.env
+.env.*
+coverage/
