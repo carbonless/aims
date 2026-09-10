@@ -10,7 +10,27 @@ Progress:
 - [x] Requirements document complete and format-validated
 - [x] Technical design document complete and format-validated
 - [x] Task list (tasks.md) generated from approved requirements and design
-- [ ] **NEXT: Begin implementation, starting at Task 1 (scaffold project structure)**
+- [x] Task 1 done: project scaffold, tooling, domain types, Repository
+      interface, in-memory fake, smoke tests passing
+- [x] Git + CI/CD set up (see below)
+- [ ] **NEXT: Task 2 — core field validation (identifier/quantity/NEQ) with
+      property tests P2, P3, P4**
+
+## Git & CI/CD (set up 2026-09-09)
+- GitHub: private repo `carbonless/aims`, trunk-based on `main` (modeled on
+  the VEA Digital Asset Platform).
+- CI/CD: AWS CDK Pipelines self-mutating CodePipeline in `infra/cdk/`, sourced
+  from `carbonless/aims@main`. Stages: Dev -> Prod (no staging, per demo).
+  Prod is currently auto-promoted (add a ManualApprovalStep to gate it).
+- AWS target: `veasystems` profile = account 817583489060, region us-east-1.
+- NOT YET DEPLOYED. Before `cdk deploy`:
+  1. Create a GitHub CodeConnections connection in the console (OAuth), then
+     `cdk deploy AimsBootstrapStack --parameters GitHubConnectionArn=<arn>`.
+  2. `cdk bootstrap aws://817583489060/us-east-1` if not already bootstrapped.
+  3. `cdk deploy AimsPipelineStack`.
+- Application stacks (Storage/Database/Auth/Api) are stubs with real
+  constructs + the outputs the pipeline's frontend step consumes; routes,
+  Lambdas, and IAM append-only audit policy come in Tasks 11-13.
 
 ## How to resume on the new machine
 Open this workspace (`aims`) in Kiro and, in the aims-web spec, ask to:
