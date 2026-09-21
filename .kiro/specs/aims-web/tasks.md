@@ -13,7 +13,7 @@ Conventions:
 
 ## Tasks
 
-- [ ] 1. Scaffold the project structure and shared types
+- [x] 1. Scaffold the project structure and shared types
   - Create a TypeScript monorepo-style layout: `domain/` (pure logic), `adapters/` (DynamoDB, Cognito, S3), `handlers/` (Lambda entrypoints), `infra/` (CDK), `web/` (React + Vite), `test/`.
   - Configure TypeScript (strict), the test runner (Vitest or Jest), and `fast-check`.
   - Define shared domain types: `AmmunitionItem`, `Manufacturer`, `Nature`, `Hcc`, `ConditionCode`, `ExplosiveStorehouse`, `StockMovement`, `AuditRecord`, `Role`, and the structured error shape `{ error: { code, message, fields[] } }`.
@@ -21,13 +21,13 @@ Conventions:
   - Implement an in-memory `Repository` fake for domain tests.
   - _Requirements: all (foundation)_
 
-- [ ] 2. Implement core field validation in the domain layer
-  - [ ] 2.1 Implement validators for identifier, quantity, and NEQ
-    - Identifier length 1–64; Quantity integer 0–999,999,999; NEQ 0.00–999,999,999.99 with 2-dp rounding.
+- [x] 2. Implement core field validation in the domain layer
+  - [x] 2.1 Implement validators for identifier, quantity, and NEQ
+    - Identifier length 1–64; Quantity integer 0–999,999,999; NEQ 0.00–999,999.99 with 2-dp rounding.
     - Return the structured `VALIDATION_ERROR` naming each offending field.
     - Write property tests for Quantity (P3) and NEQ (P4), including boundary and non-integer/non-numeric cases.
     - _Requirements: 1.3, 1.4, 1.5, 3.3, 3.4 / Properties 3, 4_
-  - [ ] 2.2 Implement required-field presence checks for item creation
+  - [x] 2.2 Implement required-field presence checks for item creation
     - Reject when Manufacturer, Nature, Identifier, Quantity, or Explosive_Storehouse is missing; error names exactly the omitted fields.
     - Write property test P2.
     - _Requirements: 1.2 / Property 2_

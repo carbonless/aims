@@ -86,7 +86,7 @@ export interface AmmunitionItem {
   identifier: string;
   /** Integer 0..999,999,999. */
   quantity: number;
-  /** NEQ per item in kg, 0.00..999,999,999.99, 2 decimal places. */
+  /** NEQ per item in kg, 0.00..999,999.99, 2 decimal places. */
   neq: number;
   hccCode: string;
   conditionCode: string;

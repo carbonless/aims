@@ -210,7 +210,7 @@ erDiagram
 |-------|-----------|-------------|
 | Identifier | 1–64 chars | 1.1 |
 | Quantity | integer 0–999,999,999 | 1.1, 1.3, 1.4 |
-| NEQ (item) | 0.00–999,999,999.99 kg, 2 dp | 3.3, 3.4 |
+| NEQ (item) | 0.00–999,999.99 kg, 2 dp | 3.3, 3.4 |
 | Movement quantity | 1–999,999,999 | 7.1, 7.4 |
 | Manufacturer name | 1–200; country 1–100; others ≤200 | 2.1, 2.9 |
 | Nature name | 1–200 | 2.3 |

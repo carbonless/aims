@@ -44,11 +44,11 @@ issues, transfers, disposals).
 
 #### Acceptance Criteria
 
-1. WHEN an Inventory_Manager submits a new ammunition record with a Manufacturer, a Nature, an Identifier of 1 to 64 characters, a Quantity that is an integer from 0 to 999,999,999, an NEQ that is a number from 0 to 999,999,999.99 kilograms, an HCC, a Condition_Code, and an Explosive_Storehouse, THE AIMS SHALL create an Ammunition_Item and assign a unique ammunition identifier.
+1. WHEN an Inventory_Manager submits a new ammunition record with a Manufacturer, a Nature, an Identifier of 1 to 64 characters, a Quantity that is an integer from 0 to 999,999,999, an NEQ that is a number from 0 to 999,999.99 kilograms, an HCC, a Condition_Code, and an Explosive_Storehouse, THE AIMS SHALL create an Ammunition_Item and assign a unique ammunition identifier.
 2. IF an Inventory_Manager submits a new ammunition record that is missing a Manufacturer, a Nature, an Identifier, a Quantity, or an Explosive_Storehouse, THEN THE AIMS SHALL reject the submission, create no Ammunition_Item, and return a message naming each missing field.
 3. IF an Inventory_Manager submits a Quantity that is less than zero or greater than 999,999,999, THEN THE AIMS SHALL reject the submission, create no Ammunition_Item, and return a validation error indicating the permitted Quantity range.
 4. IF an Inventory_Manager submits a Quantity that is not an integer numeric value, THEN THE AIMS SHALL reject the submission, create no Ammunition_Item, and return a validation error indicating that Quantity must be a whole number.
-5. IF an Inventory_Manager submits an NEQ that is less than zero or greater than 999,999,999.99 kilograms, THEN THE AIMS SHALL reject the submission, create no Ammunition_Item, and return a validation error indicating the permitted NEQ range.
+5. IF an Inventory_Manager submits an NEQ that is less than zero or greater than 999,999.99 kilograms, THEN THE AIMS SHALL reject the submission, create no Ammunition_Item, and return a validation error indicating the permitted NEQ range.
 6. WHEN an Inventory_Manager updates an existing Ammunition_Item with values that satisfy the Quantity and NEQ bounds, THE AIMS SHALL persist the updated values and record the change in the Audit_Trail.
 7. IF an Inventory_Manager requests an update to an Ammunition_Item that does not exist, THEN THE AIMS SHALL reject the update, change no stored data, and return a message indicating that the Ammunition_Item was not found.
 8. WHEN an Inventory_Manager requests a list of Ammunition_Items, THE AIMS SHALL return the matching items with Manufacturer, Nature, Identifier, Quantity, NEQ, HCC, Condition_Code, Ban_Status, and Explosive_Storehouse.
@@ -80,8 +80,8 @@ issues, transfers, disposals).
 
 1. WHEN an Ammunition_Item is created or updated, THE AIMS SHALL require an HCC value that matches an existing entry in the HCC reference data.
 2. IF an Ammunition_Item is created or updated with an HCC value that is missing or does not match an existing entry in the HCC reference data, THEN THE AIMS SHALL reject the submission, return a validation error indicating the HCC value is invalid, and leave the Ammunition_Item record unchanged.
-3. WHEN an Ammunition_Item is created or updated, THE AIMS SHALL require an NEQ value expressed in kilograms that is greater than or equal to 0.00 and less than or equal to 999,999,999.99, recorded to a precision of two decimal places.
-4. IF an NEQ value is submitted that is negative, non-numeric, missing, or exceeds 999,999,999.99, THEN THE AIMS SHALL reject the submission, return a validation error indicating the NEQ value is invalid, and leave the Ammunition_Item record unchanged.
+3. WHEN an Ammunition_Item is created or updated, THE AIMS SHALL require an NEQ value expressed in kilograms that is greater than or equal to 0.00 and less than or equal to 999,999.99, recorded to a precision of two decimal places.
+4. IF an NEQ value is submitted that is negative, non-numeric, missing, or exceeds 999,999.99, THEN THE AIMS SHALL reject the submission, return a validation error indicating the NEQ value is invalid, and leave the Ammunition_Item record unchanged.
 5. WHEN a Safety_Officer requests the aggregate NEQ for an Explosive_Storehouse, THE AIMS SHALL return the sum of each Ammunition_Item's NEQ multiplied by that item's Quantity for all items stored in that Explosive_Storehouse, expressed in kilograms to two decimal places.
 6. WHEN a Safety_Officer requests the aggregate NEQ or NEQ breakdown for an Explosive_Storehouse that contains no Ammunition_Items, THE AIMS SHALL return an aggregate NEQ of 0.00 kilograms.
 7. WHEN a Safety_Officer requests an NEQ breakdown for an Explosive_Storehouse, THE AIMS SHALL return the aggregate NEQ grouped by HCC, expressed in kilograms to two decimal places.
