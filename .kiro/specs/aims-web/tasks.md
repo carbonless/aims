@@ -68,12 +68,12 @@ The plan builds the pure domain layer first (Tasks 2–10): field validation, re
     - Write property test P10.
     - _Requirements: 1.10, 1.11 / Property 10_
 
-- [ ] 5. Implement NEQ aggregation and storehouse safety domain logic
-  - [ ] 5.1 Implement on-demand NEQ aggregation over storehouse contents
+- [x] 5. Implement NEQ aggregation and storehouse safety domain logic
+  - [x] 5.1 Implement on-demand NEQ aggregation over storehouse contents
     - Compute aggregate NEQ as the sum of `neq × quantity` across a storehouse's items (0.00 when empty) and the per-HCC breakdown by grouping on HCC; the domain layer computes these from item data via the Repository (no maintained counters).
     - Write property tests P16 (aggregate = Σ neq×qty), P17 (breakdown partitions aggregate).
     - _Requirements: 3.5, 3.6, 3.7 / Properties 16, 17_
-  - [ ] 5.2 Implement storehouse create/validation, capacity, and mixed-hazard view
+  - [x] 5.2 Implement storehouse create/validation, capacity, and mixed-hazard view
     - Validate name 1–100 and NEQ_Limit 0–999,999,999.99, reject duplicates; compute remaining capacity = limit − aggregate; flag mixed hazard listing distinct HCCs when ≥2 present.
     - Write property tests P18 (create/validate), P20 (remaining capacity), P21 (mixed-hazard set).
     - _Requirements: 4.1, 4.2, 4.3, 4.5, 4.6 / Properties 18, 20, 21_

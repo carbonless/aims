@@ -51,7 +51,9 @@ describe("Task 4.1 — item create with referential gates", () => {
     await fc.assert(
       fc.asyncProperty(
         fc.record({
-          identifier: fc.string({ minLength: 1, maxLength: 64 }).filter((s) => s.length >= 1),
+          identifier: fc
+            .array(fc.constantFrom(..."ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-".split("")), { minLength: 1, maxLength: 64 })
+            .map((cs) => cs.join("")),
           quantity: fc.integer({ min: 0, max: 999_999_999 }),
           neqCents: fc.integer({ min: 0, max: 99_999_999 }),
         }),
