@@ -1,7 +1,7 @@
 # Implementation Plan
 
 This plan implements AIMS incrementally, building the pure, testable domain layer first (with
-property-based tests per the design's testing strategy) and wiring it to AWS (DynamoDB, API Gateway,
+property-based tests per the design's testing strategy) and wiring it to AWS (Aurora Serverless v2 Postgres via RDS Proxy, API Gateway,
 Lambda, Cognito, S3/CloudFront) afterward. Each task builds on prior tasks, references the
 requirements it satisfies, and — where applicable — the correctness Property (P1–P46) it verifies.
 
@@ -11,13 +11,17 @@ Conventions:
 - The domain layer is pure TypeScript (no AWS SDK) tested against an in-memory repository fake.
 - "Wire up" tasks connect already-tested domain logic to real AWS services.
 
+## Overview
+
+The plan builds the pure domain layer first (Tasks 2–10): field validation, reference-data services, ammunition item CRUD, NEQ aggregation and storehouse safety, ban/restriction, stock movements and audit, NEQ-limit warnings, reporting, and authorization — all validated with property-based tests against an in-memory repository fake. It then adds the Aurora/PostgreSQL persistence adapter (Task 11) behind the store-agnostic Repository interface, followed by the Lambda handlers and API surface (Task 12) and the AWS CDK infrastructure (Task 13). Finally it builds the React frontend (Task 15) and performs end-to-end wiring and verification (Task 16). Property-based tests run throughout, so each domain behavior is verified before it is wired to real AWS services.
+
 ## Tasks
 
 - [x] 1. Scaffold the project structure and shared types
-  - Create a TypeScript monorepo-style layout: `domain/` (pure logic), `adapters/` (DynamoDB, Cognito, S3), `handlers/` (Lambda entrypoints), `infra/` (CDK), `web/` (React + Vite), `test/`.
+  - Create a TypeScript monorepo-style layout: `domain/` (pure logic), `adapters/` (Aurora/Postgres, Cognito, S3), `handlers/` (Lambda entrypoints), `infra/` (CDK), `web/` (React + Vite), `test/`.
   - Configure TypeScript (strict), the test runner (Vitest or Jest), and `fast-check`.
   - Define shared domain types: `AmmunitionItem`, `Manufacturer`, `Nature`, `Hcc`, `ConditionCode`, `ExplosiveStorehouse`, `StockMovement`, `AuditRecord`, `Role`, and the structured error shape `{ error: { code, message, fields[] } }`.
-  - Define the `Repository` interface (item/reference/storehouse/movement/audit access + transaction assembly) so domain services depend on the interface, not on DynamoDB.
+  - Define the `Repository` interface (item/reference/storehouse/movement/audit access + transaction assembly) so domain services depend on the interface, not on the database.
   - Implement an in-memory `Repository` fake for domain tests.
   - _Requirements: all (foundation)_
 
@@ -65,8 +69,8 @@ Conventions:
     - _Requirements: 1.10, 1.11 / Property 10_
 
 - [ ] 5. Implement NEQ aggregation and storehouse safety domain logic
-  - [ ] 5.1 Implement the maintained aggregate-NEQ counter model
-    - Apply delta `neq × Δquantity` (and `quantity × Δneq` on NEQ edits) to per-storehouse and per-HCC counters; expose aggregate NEQ (0.00 when empty) and per-HCC breakdown.
+  - [ ] 5.1 Implement on-demand NEQ aggregation over storehouse contents
+    - Compute aggregate NEQ as the sum of `neq × quantity` across a storehouse's items (0.00 when empty) and the per-HCC breakdown by grouping on HCC; the domain layer computes these from item data via the Repository (no maintained counters).
     - Write property tests P16 (aggregate = Σ neq×qty), P17 (breakdown partitions aggregate).
     - _Requirements: 3.5, 3.6, 3.7 / Properties 16, 17_
   - [ ] 5.2 Implement storehouse create/validation, capacity, and mixed-hazard view
@@ -114,16 +118,16 @@ Conventions:
   - Write property tests P44 (matrix), P45 (attribution + denial audit), P46 (auth events + lockout counting).
   - _Requirements: 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8, 9.10 / Properties 44, 45, 46_
 
-- [ ] 11. Implement the DynamoDB repository adapter
-  - [ ] 11.1 Implement single-table key mapping and CRUD for items, reference data, and storehouses
-    - Map entities to the `aims` table PK/SK scheme; implement GSI1 (list/filter items), GSI3 (case-insensitive duplicate + reference-usage counts).
+- [ ] 11. Implement the Aurora/PostgreSQL repository adapter
+  - [ ] 11.1 Implement the relational schema and CRUD for items, reference data, and storehouses
+    - Create the PostgreSQL schema (tables, primary/foreign keys, and indexes per the design), including case-insensitive unique indexes on `lower(name)`/`lower(code)` for duplicate detection and foreign-key-based reference-in-use counts; implement the Repository CRUD and filtered `listItems` queries.
     - _Requirements: 1.1, 1.8, 1.9, 2.6, 2.8, 4.1 (persistence)_
-  - [ ] 11.2 Implement transactional movement/aggregate/audit writes with TransactWriteItems
-    - Assemble a single `TransactWriteItems` for item change + NEQ aggregate counters + append-only audit item (condition `attribute_not_exists` on audit key; `quantity >= amount` on decrements); expose GSI2 for audit-by-item newest-first.
-    - Wire the DynamoDB repo into the already-tested domain services.
+  - [ ] 11.2 Implement transactional movement/audit writes and on-demand aggregation queries
+    - Assemble a single SQL transaction (`BEGIN`/`COMMIT`, `SELECT ... FOR UPDATE`, `quantity >= amount` guard) for item change + `stock_movement` + append-only `audit_record`; implement aggregate-NEQ / per-HCC / distinct-HCC queries with SQL aggregates; audit ordering newest-first.
+    - Wire the Aurora repository into the already-tested domain services via the store-agnostic Repository interface.
     - _Requirements: 7.5, 7.7, 7.8, 7.9, 7.10 (persistence)_
   - [ ] 11.3 Add integration tests for transaction atomicity and rollback
-    - Verify a forced failure mid-transaction leaves state unchanged (real/local DynamoDB).
+    - Verify a forced failure mid-transaction triggers `ROLLBACK` and leaves state unchanged (against a real/local PostgreSQL), and that RDS Proxy connection handling works.
     - _Requirements: 7.7_
 
 - [ ] 12. Implement Lambda handlers and API surface
@@ -135,8 +139,8 @@ Conventions:
     - _Requirements: 9.2, 9.7_
 
 - [ ] 13. Provision infrastructure with AWS CDK
-  - Define the DynamoDB table + GSIs (with TTL for sessions), API Gateway HTTP API with a Cognito JWT authorizer, Lambda functions, the Cognito User Pool (lockout after 5 failures, ≥15-min lock; 15-min inactivity token expiry), S3 buckets (SPA hosting + export objects), and CloudFront.
-  - Configure the Lambda execution-role IAM policy to deny update/delete on audit items (append-only enforcement).
+  - Define the Aurora Serverless v2 (PostgreSQL) cluster with a minimum capacity of 0 ACU (scale-to-zero/auto-pause) and RDS Proxy in front for Lambda connection pooling, within a VPC; give the Lambdas VPC access to reach RDS Proxy. Define the API Gateway HTTP API with a Cognito JWT authorizer, Lambda functions, the Cognito User Pool (lockout after 5 failures, ≥15-min lock; 15-min inactivity token expiry), S3 buckets (SPA hosting + export objects), and CloudFront.
+  - Enforce the append-only audit trail by granting the application database role only INSERT/SELECT (no UPDATE/DELETE) on the `audit_record` table (plus a trigger or REVOKE as defense in depth).
   - _Requirements: 7.9, 9.1, 9.8, 9.9_
 
 - [ ] 14. Add integration tests for AWS-specific behavior
@@ -156,3 +160,104 @@ Conventions:
   - Deploy the stack, seed reference data, and run a full flow: create items → movements/transfers → NEQ aggregation → reports/CSV → audit trail, exercising role-based access across the four roles.
   - Confirm the complete property-test suite (P1–P46) passes and traceability tags are present.
   - _Requirements: all_
+
+## Task Dependency Graph
+
+```mermaid
+graph TD
+  1[1. Scaffold + shared types]
+  2[2. Field validation]
+  3[3. Reference-data services]
+  4[4. Ammunition item CRUD]
+  5[5. NEQ aggregation & storehouse safety]
+  6[6. Ban/restriction]
+  7[7. Stock movement & audit]
+  8[8. NEQ-limit warning]
+  9[9. Reporting]
+  10[10. Authorization]
+  11[11. Aurora/Postgres adapter]
+  12[12. Lambda handlers/API]
+  13[13. CDK infra]
+  14[14. AWS integration tests]
+  15[15. React frontend]
+  16[16. End-to-end wiring & verification]
+
+  1 --> 2
+  1 --> 3
+  2 --> 3
+  2 --> 4
+  3 --> 4
+  4 --> 5
+  4 --> 6
+  4 --> 7
+  5 --> 7
+  6 --> 7
+  5 --> 8
+  7 --> 8
+  5 --> 9
+  7 --> 9
+  4 --> 10
+  4 --> 11
+  5 --> 11
+  6 --> 11
+  7 --> 11
+  8 --> 11
+  9 --> 11
+  10 --> 11
+  10 --> 12
+  11 --> 12
+  11 --> 13
+  12 --> 13
+  12 --> 14
+  13 --> 14
+  12 --> 15
+  5 --> 16
+  9 --> 16
+  10 --> 16
+  11 --> 16
+  12 --> 16
+  13 --> 16
+  14 --> 16
+  15 --> 16
+```
+
+```json
+{
+  "waves": [
+    { "wave": 1, "tasks": ["1"] },
+    { "wave": 2, "tasks": ["2"] },
+    { "wave": 3, "tasks": ["3"] },
+    { "wave": 4, "tasks": ["4"] },
+    { "wave": 5, "tasks": ["5", "6", "10"] },
+    { "wave": 6, "tasks": ["7"] },
+    { "wave": 7, "tasks": ["8", "9"] },
+    { "wave": 8, "tasks": ["11"] },
+    { "wave": 9, "tasks": ["12", "13"] },
+    { "wave": 10, "tasks": ["14", "15"] },
+    { "wave": 11, "tasks": ["16"] }
+  ],
+  "dependencies": {
+    "1": [],
+    "2": ["1"],
+    "3": ["1", "2"],
+    "4": ["2", "3"],
+    "5": ["4"],
+    "6": ["4"],
+    "7": ["4", "5", "6"],
+    "8": ["5", "7"],
+    "9": ["5", "7"],
+    "10": ["4"],
+    "11": ["4", "5", "6", "7", "8", "9", "10"],
+    "12": ["10", "11"],
+    "13": ["11"],
+    "14": ["12", "13"],
+    "15": ["12"],
+    "16": ["11", "12", "13", "14", "15"]
+  }
+}
+```
+
+## Notes
+
+- The domain layer is store-agnostic behind the `Repository` interface, so Tasks 2–10 are validated with the in-memory repository fake and `fast-check` property tests before the Aurora/PostgreSQL adapter (Task 11) exists.
+- A one-time manual step is required: create the GitHub CodeConnections connection in the AWS console so the pipeline can source the repository. Additionally, the Lambda functions need VPC access to reach RDS Proxy (and thus Aurora).
