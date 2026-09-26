@@ -46,20 +46,20 @@ Conventions:
     - Write property test P14.
     - _Requirements: 2.7 / Property 14_
 
-- [ ] 4. Implement Ammunition_Item create/update/list/delete with referential gates
-  - [ ] 4.1 Implement item create with HCC and Condition_Code validity gates
+- [x] 4. Implement Ammunition_Item create/update/list/delete with referential gates
+  - [x] 4.1 Implement item create with HCC and Condition_Code validity gates
     - Compose field validation with HCC-exists (P5) and Condition_Code-exists (P6) checks; assign a unique id on success.
     - Write property tests P1 (valid create → unique id), P5, P6.
     - _Requirements: 1.1, 3.1, 3.2, 5.1, 5.2 / Properties 1, 5, 6_
-  - [ ] 4.2 Implement item update and not-found handling
+  - [x] 4.2 Implement item update and not-found handling
     - Persist updates that satisfy Quantity/NEQ bounds; reject updates to non-existent items with `NOT_FOUND` and no data change.
     - Write property test P7 and a unit test for the non-existent-item case (1.7).
     - _Requirements: 1.6, 1.7 / Property 7_
-  - [ ] 4.3 Implement list with filters and full field exposure
+  - [x] 4.3 Implement list with filters and full field exposure
     - Return the full field set per item; filters over {Manufacturer, Nature, Explosive_Storehouse, Condition_Code, Identifier} are sound and complete.
     - Write property tests P8 (field set) and P9 (filter soundness/completeness, incl. Condition filter 5.4).
     - _Requirements: 1.8, 1.9, 5.4 / Properties 8, 9_
-  - [ ] 4.4 Implement zero-quantity-gated deletion
+  - [x] 4.4 Implement zero-quantity-gated deletion
     - Delete iff Quantity == 0; otherwise retain and return the dispose/transfer-first message.
     - Write property test P10.
     - _Requirements: 1.10, 1.11 / Property 10_
