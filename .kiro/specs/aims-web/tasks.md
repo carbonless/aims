@@ -32,16 +32,16 @@ Conventions:
     - Write property test P2.
     - _Requirements: 1.2 / Property 2_
 
-- [ ] 3. Implement reference-data domain services (Manufacturer, Nature, HCC, Condition_Code)
-  - [ ] 3.1 Implement create/round-trip and length validation for reference data
+- [x] 3. Implement reference-data domain services (Manufacturer, Nature, HCC, Condition_Code)
+  - [x] 3.1 Implement create/round-trip and length validation for reference data
     - Manufacturer name 1–200 + country 1–100 mandatory, optional fields ≤200; Nature 1–200; HCC/Condition code 1–50, description 1–500; Condition_Code carries a `serviceable` flag.
     - Write property tests P11 (manufacturer round-trip + missing mandatory) and P12 (over-length rejection).
     - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.9 / Properties 11, 12_
-  - [ ] 3.2 Implement case-insensitive duplicate detection and reference-in-use guard
+  - [x] 3.2 Implement case-insensitive duplicate detection and reference-in-use guard
     - Reject duplicates by lowercased key; block deletion of referenced records and report the referencing count.
     - Write property tests P15 (duplicate) and P13 (referenced cannot be deleted).
     - _Requirements: 2.6, 2.8 / Properties 13, 15_
-  - [ ] 3.3 Implement constrained selectable-values lookup for the item editor
+  - [x] 3.3 Implement constrained selectable-values lookup for the item editor
     - Selectable values equal exactly the current reference set of each type.
     - Write property test P14.
     - _Requirements: 2.7 / Property 14_

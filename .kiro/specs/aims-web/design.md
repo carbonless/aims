@@ -22,31 +22,41 @@ stakeholder.
 | Frontend hosting | Amazon S3 + CloudFront | Static hosting, TLS, caching, global edge |
 | API | Amazon API Gateway (HTTP API) | Managed HTTPS entry point, JWT authorizer integration |
 | Compute | AWS Lambda (Node.js 20, TypeScript) | Pay-per-use, no idle servers |
-| Data store | Amazon DynamoDB (single-table design + GSIs) | Serverless, `TransactWriteItems` for atomic transfers, TTL for sessions |
+| Data store | Amazon Aurora Serverless v2 (PostgreSQL) | Relational engine natively fits AIMS's ad-hoc filtered lists (Req 1.9), grouped reports (Req 8.1–8.2), date-range queries (Req 8.3), and on-demand aggregation (`SUM(neq*quantity)`) without maintained counter items. Minimum capacity of 0 ACU enables auto-pause / scale-to-zero so idle compute cost is ~$0 (with a resume latency on the first request after idle). RDS Proxy sits in front to manage Lambda connection pooling. |
 | Authentication | Amazon Cognito User Pools | Managed login, lockout, and token expiry (Req 9) |
 | IaC | AWS CDK (TypeScript) | Reproducible multi-site deployment |
 
 ### Design Decisions and Rationale
 
-- **DynamoDB over a relational engine.** The original data model (`AIM_Latest.sql`, `Db_Layout.pdf`)
-  is relational, but the serverless/S3-hosting constraint rules out an always-on RDBMS. DynamoDB is
-  used with a single-table design. The two capabilities that a relational engine would give "for
-  free" — atomic multi-row writes and server-side aggregation — are handled explicitly:
-  - **Atomicity:** `TransactWriteItems` provides all-or-nothing writes across the items involved in
-    a movement (source item, destination item, aggregate counters, audit entry), satisfying transfer
-    atomicity and rollback (Req 7.5–7.7).
-  - **Aggregation:** Aggregate NEQ per storehouse and per HCC is maintained incrementally as a set of
-    counter items updated inside the same transaction as each stock/NEQ change. This gives O(1) reads
-    for the aggregate NEQ, mixed-hazard, and reporting requirements (Req 3.5–3.7, 4.4–4.6, 8.1–8.2),
-    comfortably within the 10-second SLAs.
+- **Aurora Serverless v2 Postgres over a NoSQL store.** The original data model (`AIM_Latest.sql`,
+  `Db_Layout.pdf`) is relational, and AIMS's core query patterns — ad-hoc filtered lists (Req 1.9),
+  grouped/date-range reports (Req 8.1–8.3), and on-demand NEQ aggregation — map directly onto SQL.
+  Aurora Serverless v2 keeps the serverless posture (no always-on server to manage) while giving a
+  full relational engine. *(An earlier iteration of this design used DynamoDB with a single-table
+  layout and maintained aggregate-counter items; it was replaced by Aurora because the relational
+  engine computes these aggregates and filtered lists natively, removing the need to maintain and
+  keep counters consistent.)*
+  - **Aggregation (on demand, no counters).** Aggregate NEQ per storehouse is a
+    `SELECT SUM(neq*quantity) ... GROUP BY storehouse_id`; the per-HCC breakdown adds
+    `GROUP BY hcc_code`; mixed-hazard detection is `COUNT(DISTINCT hcc_code) >= 2`. These run on
+    demand, so there are no maintained counter items to keep consistent (Req 3.5–3.7, 4.4–4.6,
+    8.1–8.2), and they sit comfortably within the 10-second SLAs given the expected data volumes.
+  - **Atomicity:** transfers and any multi-row movement run inside a single SQL transaction
+    (`BEGIN`/`COMMIT`) with row-level locking (`SELECT ... FOR UPDATE`) on the affected items, giving
+    all-or-nothing writes across source item, destination item, movement, and audit rows — satisfying
+    transfer atomicity and rollback (Req 7.5–7.7).
+  - **Scale-to-zero:** a minimum capacity of 0 ACU lets Aurora auto-pause when idle, so idle compute
+    cost is ~$0 (at the cost of a resume latency on the first request after an idle period). **RDS
+    Proxy** sits between the Lambdas and Aurora to pool and reuse database connections, avoiding
+    connection exhaustion under Lambda concurrency.
 - **Cognito for authentication.** Cognito User Pools provide credential verification, configurable
   account lockout after repeated failures, and token expiry — directly mapping to Req 9.8 (5-attempt
   lockout, ≥15 min) and Req 9.9 (15-min inactivity expiry). Authorization (role → permission) is
   enforced in the API layer, keyed off a role claim.
-- **Append-only audit trail via write-once semantics.** Audit items are written with a
-  condition expression that fails if the key already exists, and no application code path issues
-  `UpdateItem`/`DeleteItem` against audit items. IAM policies for the Lambda execution role further
-  deny update/delete on audit items (Req 7.9).
+- **Append-only audit trail via SQL grants.** Audit rows are `INSERT`-only: the application database
+  role is granted only `INSERT`/`SELECT` (no `UPDATE`/`DELETE`) on the `audit_record` table, and a
+  trigger or explicit `REVOKE` additionally blocks modification, so no code path can alter or remove
+  an audit row (Req 7.9).
 
 ### IATG-Aligned Additions
 
@@ -55,12 +65,12 @@ original spreadsheet-style data model. This design handles each explicitly:
 
 | Addition | Where handled | Requirements |
 |----------|---------------|--------------|
-| Per-storehouse NEQ limits | `Explosive_Storehouse.neqLimit`, aggregate-NEQ counter, capacity view | 4.1–4.5 |
-| Mixed-hazard (distinct HCC) detection | Per-storehouse per-HCC counter items; distinct-HCC set on storehouse view | 4.6 |
-| Serviceability gating on issue | `Condition_Code.serviceable` flag checked before issue movements | 5.5 |
-| Transfer atomicity / rollback | `TransactWriteItems` (all-or-nothing) | 7.5–7.7 |
+| Per-storehouse NEQ limits | `explosive_storehouse.neq_limit`, on-demand aggregate query (`SUM(neq*quantity) GROUP BY storehouse_id`), capacity view | 4.1–4.5 |
+| Mixed-hazard (distinct HCC) detection | `COUNT(DISTINCT hcc_code) >= 2` per storehouse; distinct-HCC set on storehouse view | 4.6 |
+| Serviceability gating on issue | `condition_code.serviceable` flag checked before issue movements | 5.5 |
+| Transfer atomicity / rollback | SQL transaction (`BEGIN`/`COMMIT`, `SELECT ... FOR UPDATE`) — all-or-nothing | 7.5–7.7 |
 | Auth lockout and session expiry | Cognito lockout + token/inactivity expiry | 9.8–9.9 |
-| Append-only audit trail | Write-once condition + IAM deny on update/delete | 7.9 |
+| Append-only audit trail | INSERT/SELECT-only DB grants on audit_record (no UPDATE/DELETE) + trigger/REVOKE | 7.9 |
 
 ## Architecture
 
@@ -73,7 +83,8 @@ graph TD
     U -->|REST /api| APIGW[API Gateway HTTP API]
     APIGW -->|JWT authorizer| COG[Cognito User Pool]
     APIGW --> L[Lambda Handlers TypeScript]
-    L --> DDB[(DynamoDB single table)]
+    L -->|SQL via connection pool| PROXY[RDS Proxy]
+    PROXY --> AUR[(Aurora Serverless v2 - PostgreSQL)]
     L --> COGADM[Cognito Admin API - user/role mgmt]
     L -->|CSV stream| S3EXP[(S3 - export objects, presigned URL)]
 ```
@@ -86,7 +97,8 @@ graph TD
 3. API calls go to API Gateway with the token in the `Authorization` header. A JWT authorizer
    validates the token and rejects unauthenticated requests (Req 9.1) before invoking any handler.
 4. The target Lambda handler runs an authorization check (role → permitted action) and then the
-   business logic against DynamoDB. Denials are recorded in the audit trail (Req 9.3, 9.4, 9.10).
+   business logic against Aurora (via RDS Proxy) using SQL. Denials are recorded in the audit trail
+   (Req 9.3, 9.4, 9.10).
 
 ### Logical Layering (inside each Lambda)
 
@@ -98,14 +110,15 @@ graph LR
     H[HTTP Handler] --> A[AuthZ Guard]
     A --> V[Validation]
     V --> D[Domain Services]
-    D --> R[Repository DynamoDB adapter]
+    D --> R[Repository Aurora SQL adapter]
     D --> AUD[Audit Writer]
 ```
 
 - **Domain Services** are pure TypeScript (no AWS SDK) where possible — validation, NEQ math,
   quantity math, ban/serviceability rules. This is the layer property-based tests target.
-- **Repository** encapsulates all DynamoDB access and transaction assembly.
-- **Audit Writer** appends audit records within the same transaction as the state change it records.
+- **Repository** encapsulates all Aurora (SQL) access and transaction assembly behind the existing
+  store-agnostic `Repository` interface (unchanged by this design).
+- **Audit Writer** appends audit records within the same SQL transaction as the state change it records.
 
 ## Components and Interfaces
 
@@ -164,28 +177,40 @@ The API is organized into modules mapping to the nine requirement areas.
 
 ## Data Models
 
-### DynamoDB Single-Table Design
+### Relational Schema (PostgreSQL)
 
-Table `aims`, partition key `PK`, sort key `SK`, plus GSIs for query access patterns.
+The schema is a normalized relational model. Reference tables (`manufacturer`, `nature`, `hcc`,
+`condition_code`) are referenced by `ammunition_item` via foreign keys; `stock_movement` and
+`audit_record` capture the movement and audit trail. Aggregation (NEQ per storehouse, per-HCC
+breakdown, mixed-hazard) is computed on demand with SQL aggregate queries — there are no maintained
+aggregate tables.
 
-| Entity | PK | SK | Key attributes |
-|--------|----|----|----------------|
-| Ammunition_Item | `ITEM#<itemId>` | `META` | manufacturerId, natureId, identifier, quantity, neq, hccCode, conditionCode, storehouseId, banStatus, banText |
-| Manufacturer | `MFR#<id>` | `META` | name, addr1, addr2, city, state, postalCode, country, nameLower (for dup check) |
-| Nature | `NAT#<id>` | `META` | name, nameLower |
-| HCC | `HCC#<code>` | `META` | code, description, codeLower |
-| Condition_Code | `CND#<code>` | `META` | code, description, serviceable (bool), codeLower |
-| Explosive_Storehouse | `ESH#<id>` | `META` | name, nameLower, street, city, state, postalCode, country, neqLimit |
-| ESH aggregate NEQ | `ESH#<id>` | `AGG#NEQ` | aggregateNeq (running sum of neq×qty) |
-| ESH per-HCC NEQ | `ESH#<id>` | `AGG#HCC#<code>` | hccCode, neqForHcc, itemCount |
-| Stock_Movement (audit) | `AUD#<storehouseId>` | `TS#<iso8601>#<uuid>` | userId, type, quantity, itemId, fromEsh, toEsh, timestamp |
-| Item audit index | via GSI | | (see GSI2) |
-| User (profile mirror) | `USR#<sub>` | `META` | role, status |
+**Tables**
 
-**GSIs**
-- **GSI1 (list/filter items):** `GSI1PK = ESH#<storehouseId>`, `GSI1SK = ITEM#<natureId>#<conditionCode>#<itemId>` — supports listing/filtering by storehouse, and secondary filtering by Nature/Condition in-query or in-Lambda (Req 1.8, 1.9, 5.4).
-- **GSI2 (audit by item):** `GSI2PK = ITEM#<itemId>`, `GSI2SK = TS#<iso8601>` — audit trail for a specific item, newest-first via reverse scan (Req 7.10).
-- **GSI3 (reference-usage counts / duplicate lookups):** `GSI3PK = REF#<type>#<lowerKey>` for O(1) case-insensitive duplicate detection (Req 2.8) and reference-in-use checks (Req 2.6).
+| Table | Primary key | Key columns | Foreign keys |
+|-------|-------------|-------------|--------------|
+| `manufacturer` | `id` (uuid) | `name`, `addr1`, `addr2`, `city`, `state`, `postal_code`, `country` | — |
+| `nature` | `id` (uuid) | `name` | — |
+| `hcc` | `code` (text) | `code`, `description` | — |
+| `condition_code` | `code` (text) | `code`, `description`, `serviceable` (boolean) | — |
+| `explosive_storehouse` | `id` (uuid) | `name`, `street`, `city`, `state`, `postal_code`, `country`, `neq_limit` (numeric(14,2)) | — |
+| `ammunition_item` | `id` (uuid) | `identifier` (text), `quantity` (integer), `neq` (numeric(12,2)), `ban_status` (boolean), `ban_text` (text) | `manufacturer_id`→`manufacturer`, `nature_id`→`nature`, `hcc_code`→`hcc`, `condition_code`→`condition_code`, `storehouse_id`→`explosive_storehouse` |
+| `stock_movement` | `id` (uuid) | `type` (text: receipt/issue/transfer/disposal), `quantity` (integer), `timestamp` (timestamptz) | `item_id`→`ammunition_item`, `from_esh`→`explosive_storehouse` (nullable), `to_esh`→`explosive_storehouse` (nullable), `user_id`→`app_user` |
+| `audit_record` | `id` (uuid) | `action` (text), `timestamp` (timestamptz), `details` (jsonb) | `user_id`→`app_user`, `item_id`→`ammunition_item` (nullable), `storehouse_id`→`explosive_storehouse` (nullable) |
+| `app_user` | `id` (uuid; Cognito `sub`) | `role` (text), `status` (text) | — |
+
+**Indexes** (chosen for the query patterns)
+
+- `ammunition_item(storehouse_id)` — list/filter by storehouse; drives per-storehouse aggregation (Req 1.9, 3.5).
+- `ammunition_item(manufacturer_id)`, `ammunition_item(nature_id)`, `ammunition_item(condition_code)` — filtered lists (Req 1.9, 5.4).
+- `ammunition_item(identifier)` — identifier filter/lookup (Req 1.9).
+- `stock_movement(timestamp)` — date-range movement reports, newest-first ordering (Req 8.3).
+- `stock_movement(item_id)` — per-item movement/audit history (Req 7.10).
+- `audit_record(item_id)` — audit query by item (Req 7.10).
+- `audit_record(storehouse_id, timestamp)` — audit query by storehouse, newest-first (Req 7.10, 7.11).
+- Case-insensitive uniqueness for duplicate detection (Req 2.8) is enforced with unique indexes on
+  `lower(name)` / `lower(code)` for `manufacturer`, `nature`, `hcc`, and `condition_code`; reference-in-use
+  checks (Req 2.6) use the foreign keys above (count of referencing `ammunition_item` rows).
 
 ### Entity Relationship (conceptual)
 
@@ -200,8 +225,6 @@ erDiagram
     EXPLOSIVE_STOREHOUSE ||--o{ STOCK_MOVEMENT : location_of
     USER ||--o{ STOCK_MOVEMENT : performed_by
     ROLE ||--o{ USER : grants
-    EXPLOSIVE_STOREHOUSE ||--|| ESH_NEQ_AGG : maintains
-    EXPLOSIVE_STOREHOUSE ||--o{ ESH_HCC_AGG : maintains
 ```
 
 ### Field Constraints (from requirements)
@@ -220,24 +243,25 @@ erDiagram
 
 ### Key Algorithms
 
-**Aggregate NEQ (maintained counter).** For each stock/NEQ change, the delta
-`Δ = neq × Δquantity` (and, on NEQ edits, `Δ = quantity × (neqNew − neqOld)`) is applied atomically
-to `ESH#<id> / AGG#NEQ` and `ESH#<id> / AGG#HCC#<code>` inside the same transaction as the item
-write. Reads are O(1). This guarantees the maintained aggregate equals the recomputed
-`Σ(neqᵢ × quantityᵢ)` (verified by property test).
+**Aggregate NEQ (SQL aggregate).** Aggregate NEQ for a storehouse is computed on demand:
+`SELECT SUM(neq * quantity) FROM ammunition_item WHERE storehouse_id = $1` (rounded to two decimal
+places; `0.00` for an empty storehouse). The per-HCC breakdown adds `GROUP BY hcc_code`. No counters
+are maintained, so the reported value is always exactly the recomputed `Σ(neqᵢ × quantityᵢ)`
+(verified by property test).
 
 **NEQ limit check (Req 4.4).** After computing the post-movement aggregate, if it exceeds
 `neqLimit`, the movement is still committed and a warning payload `{resultingAggregateNeq, neqLimit}`
 is returned. This is a warning, not a rejection.
 
-**Mixed-hazard detection (Req 4.6).** The set of `AGG#HCC#<code>` items with `itemCount > 0` is the
-set of distinct HCCs present. If size ≥ 2, the storehouse view flags mixed hazard and lists the
-codes.
+**Mixed-hazard detection (Req 4.6).** `SELECT COUNT(DISTINCT hcc_code) FROM ammunition_item WHERE
+storehouse_id = $1` gives the number of distinct HCCs present; if it is `>= 2`, the storehouse view
+flags mixed hazard and lists the distinct `hcc_code` values (obtained with `SELECT DISTINCT hcc_code`).
 
-**Transfer atomicity (Req 7.5–7.7).** A transfer is a single `TransactWriteItems` containing:
-decrement source item quantity (condition: `quantity >= amount`), increment destination, update both
-storehouses' NEQ aggregates, and append the audit item (condition: attribute-not-exists on key).
-DynamoDB commits all or none, giving conservation and rollback without compensating logic.
+**Transfer atomicity (Req 7.5–7.7).** A transfer runs inside a single SQL transaction: `BEGIN`,
+`SELECT ... FOR UPDATE` to lock the source (and destination) item rows, verify sufficient stock
+(`quantity >= amount`) via a `WHERE` guard, decrement source and increment destination quantities,
+`INSERT` the `stock_movement` and `audit_record` rows, then `COMMIT`. Any error triggers `ROLLBACK`,
+so the transfer is all-or-nothing — giving conservation and rollback without compensating logic.
 
 ## Correctness Properties
 
@@ -616,15 +640,16 @@ operation-level feedback.
 | 409 | `CONFLICT` | Duplicate reference data; already-banned/not-banned; delete of referenced ref-data; delete of non-zero-qty item; insufficient stock; same-source/dest transfer; not-serviceable issue | 1.11, 2.6, 2.8, 5.5, 6.3, 6.6, 7.3, 7.6 |
 | 200 + warning | `NEQ_LIMIT_WARNING` | Over-limit movement recorded but flagged | 4.4 |
 | 423 | `ACCOUNT_LOCKED` | Locked after 5 failures | 9.8 |
-| 500 | `INTERNAL_ERROR` | Unexpected; transfers roll back atomically; CSV export aborts leaving data unchanged | 7.7, 8.7 |
+| 500 | `INTERNAL_ERROR` | Unexpected; the SQL transaction rolls back atomically; CSV export aborts leaving data unchanged | 7.7, 8.7 |
 
 ### Atomicity and Rollback
 
-- All multi-item writes (transfers, and any movement that touches item + aggregates + audit) use a
-  single `TransactWriteItems`. DynamoDB commits all or nothing, so a failure at any step leaves state
-  as it was before the operation (Req 7.7).
-- Conditional checks (`quantity >= amount`, `attribute_not_exists` on audit keys, ban/serviceable
-  guards) are expressed as transaction conditions so invalid movements never partially apply.
+- All multi-row writes (transfers, and any movement that touches item + movement + audit) run inside
+  a single SQL transaction (`BEGIN`/`COMMIT`). PostgreSQL commits all or nothing, so a failure at any
+  step triggers a `ROLLBACK` that leaves state as it was before the operation (Req 7.7).
+- Guard conditions (`quantity >= amount`, ban/serviceable guards) are enforced with SQL constraints,
+  `WHERE` guards, and `SELECT ... FOR UPDATE` row locking, so invalid or concurrent movements never
+  partially apply.
 - CSV export builds the file in memory / streams to a temporary S3 object; if generation fails, no
   object is finalized and no report state changes (Req 8.7).
 
@@ -646,9 +671,10 @@ change stored data (the "leave unchanged" clauses in Req 1.7, 3.2, 5.2, 6.2–6.
   update of a non-existent item (1.7), CSV export failure (8.7), simple reference-data create
   (2.3–2.5).
 - **Integration tests** verify AWS wiring that PBT is unsuited for: the JWT authorizer rejects
-  unauthenticated calls, `TransactWriteItems` truly rolls back on a forced failure, Cognito lockout
-  and token expiry behavior (Req 9.8, 9.9), and report SLA/performance (the "within 10 seconds"
-  clauses of Req 8.1–8.3, validated with a representative dataset).
+  unauthenticated calls, the SQL transaction truly rolls back on a forced failure, RDS Proxy
+  connection handling works under Lambda concurrency, Cognito lockout and token expiry behavior
+  (Req 9.8, 9.9), and report SLA/performance (the "within 10 seconds" clauses of Req 8.1–8.3,
+  validated with a representative dataset).
 
 ### Property-Based Testing
 
@@ -676,5 +702,6 @@ correctness, authorization) over large input spaces.
   by integration tests. The application's own attempt-counting/clock logic is property-tested.
 - **10-second report SLAs** (Req 8.1–8.3): performance, not a logical property; verified by a
   load/integration test against a representative dataset.
-- **DynamoDB transaction semantics** themselves: trusted AWS behavior; we integration-test that our
-  transaction is assembled correctly and rolls back on a forced failure.
+- **Aurora/PostgreSQL transaction semantics** themselves: trusted engine behavior; we integration-test
+  that our transaction is assembled correctly and rolls back on a forced failure, and that RDS Proxy
+  connection handling works under Lambda concurrency.
